@@ -1,6 +1,8 @@
 from datetime import datetime as dt
-from flaskblog import app,db,bcrypt
-from flask import jsonify, render_template,flash,redirect,url_for,request
+from flaskblog import app,db,bcrypt,api
+from flask import jsonify, render_template,flash,redirect,url_for,request,abort
+from flask_restful import Api,Resource
+from flask_jwt_extended import JWTManager,create_access_token,jwt_required,get_jwt_identity
 from flaskblog.models import Post, Provision,User
 from flaskblog.forms import Login,Register,UpdateAccountForm,PostForm
 from flask_login import login_user,current_user,logout_user,login_required
@@ -117,9 +119,37 @@ def new_post():
     return render_template('create_post.html',title='New Post',form=form)
 
 @app.route('/post/<int:post_id>')
+@login_required
 def post(post_id):
     post=Post.query.get_or_404(post_id)
     return render_template('post.html',title=post.title,post=post)
+@app.route('/post/<int:post_id>/update',methods=['GET','POST'])
+def update_post(post_id):
+    post=Post.query.get_or_404(post_id)
+    if post.author != current_user:
+        abort(403)
+    form=PostForm()
+    
+    if form.validate_on_submit():
+        post.title=form.title.data
+        post.content=form.content.data
+        db.session.commit()
+        flash('Post has been updated','success')
+        return redirect(url_for('home'))
+    form.title.data=post.title
+    form.content.data=post.content
+    return render_template('create_post.html',title="Update post",form=form)
+
+@app.route('/post/<int:post_id>/delete',methods=['GET','POST'])
+def delete_post(post_id):
+    post=Post.query.get_or_404(post_id)
+    if post.author != current_user:
+        abort(403)
+    db.session.delete(post)
+    db.session.commit()
+    flash('Post has been deleted','success')
+    return redirect(url_for('home'))
+
 
 @app.route('/catalog',methods=['POST','GET'])
 def catalog():
@@ -202,3 +232,164 @@ def get_data():
         # data=list(set(data))
         return jsonify({"message": "Success","data":data})
     
+users={
+    "testuser":"testpassword"
+}
+
+class LoginApi(Resource):
+    def post(self):
+        username=request.json.get('username')
+        password=request.json.get('password')
+        if not username or not password:
+            return {"message":"Username and Password required"},400
+        
+        if users.get(username)==password:
+            access_token=create_access_token(identity=username)
+            return {"access_token":access_token},200
+        else:
+            return {"message":"Invalid credentials"},401
+        
+# class Protected(Resource):
+#     @jwt_required()
+#     def get(self):
+#         current_user=get_jwt_identity()
+#         user_data=[i.username for i in User.query.all()]
+#         if request.args.get('action')=='list':
+#             return {
+#                 "message":f"Yes its working...",
+#                 "Value":[{"Username":i.username,"Email":i.email} for i in User.query.all()]
+#             },200
+#         if request.args.get('username') in user_data:
+#             user_name=request.args.get('username')
+#             user_name_data=User.query.filter(User.username==user_name).first()
+#             print(user_name_data)
+#             return {
+#                 "Value":{"Username":user_name_data.username,"Email":user_name_data.email}
+#             },200
+#         return {
+#             "message":f"Hello,{current_user} you have passed wrong query",
+#         },400
+#     def get(self,username):
+#         user_name_data=User.query.filter_by(username=username).first()
+#         {
+#             "Value":{
+#                 "Username":user_name_data.username,
+#                 "Email":user_name_data.email
+#             }
+#         },200
+#Overridding doesn't work here so don't do this mistake.
+
+class Protected(Resource):
+    @jwt_required()
+    def get(self,username=None):
+        current_user=get_jwt_identity()
+        action=request.args.get('action')
+        user_name=request.args.get('username')
+        if username:
+            return self.get_user_by_username(username)
+        
+        if action == 'list':
+            return self.list_all_users()
+        
+        if user_name:
+            return self.get_user_by_query(user_name)
+        
+        return self.bad_request(current_user)
+    
+    def get_user_by_username(self,username):
+        user=User.query.filter_by(username=username).first()
+        if user:
+            return {
+                "Value":{
+                    "Username":user.username,
+                    "Email":user.email
+                }
+            },200
+        else:
+            return {
+                "message":f"No user found with the username {username}"
+            },404
+    
+    def list_all_users(self):
+        
+        try:
+            page = int(request.args.get('page', 1))
+            limit = int(request.args.get('limit', 3))
+            if page < 1 or limit < 1:
+                raise ValueError
+        except ValueError:
+            return self.success_response(data=None, message="Page and limit must be positive integers", status_code=400)
+        
+        sort_by=request.args.get('sort_by','username')
+        order=request.args.get('order','asc')
+        search=request.args.get('search',None)
+        allowed_sort_fields=['username','email']
+        if sort_by not in allowed_sort_fields:
+            return self.success_response(data=None,message=f"sort_by must be one of {allowed_sort_fields}",status_code=400)
+        sort_field=getattr(User,sort_by)
+        if order=='desc':
+            sort_field=sort_field.desc()
+        else:
+            sort_field=sort_field.asc()
+        offset=(page-1)*limit
+        query=User.query
+        if search:
+            search =f"%{search}%"
+            query=query.filter(User.username.ilike(search))
+
+        users=query.order_by(sort_field).offset(offset).limit(limit).all()
+        user_list=[{"Username":user.username,"Email":user.email} for user in users]
+        total_users=query.count()
+        extra={
+            "pagination":{
+                "current_page":page,
+                "limit":limit,
+                "total_users":total_users,
+                "total_page":(total_users+limit-1)//limit
+            },
+            "sorting":{
+                "sorted_by":sort_by,
+                "order":order
+            },
+            "search": search if search else None
+        }
+        return self.success_response(data=user_list,extra=extra)
+        # return {
+        #     "message":"List of all the users",
+        #     "Value":user_list
+        # },200
+    def get_user_by_query(self,user_name):
+        user=User.query.filter_by(username=user_name).first()
+        if user:
+            data={
+                    "Username":user.username,
+                    "Email":user.email
+                }
+            return self.success_response(data=data)
+            # return {
+            #     "Value":{
+            #         "Username":user.username,
+            #         "Email":user.email
+            #     }
+            # },200
+        else:
+            fail_message=f"No user found with username '{user_name}'"
+            return self.success_response(data=fail_message,message="Failed",status_code=404)
+    def bad_request(self,current_user):
+        return {
+            "message":f"Hello, {current_user}. You have passed wrong query or parameter"
+        },400
+        
+    def success_response(self,data,message="Success",status_code=200,extra=None):
+        response={
+            "message":message,
+            "data":data
+        }
+        if extra:
+            response.update(extra)
+        return response,status_code
+    
+    
+api.add_resource(LoginApi,'/login_api')
+# api.add_resource(Protected,'/protected')
+api.add_resource(Protected,'/protected/username/<string:username>','/protected')

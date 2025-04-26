@@ -3,8 +3,13 @@ from flask_sqlalchemy import SQLAlchemy
 from flask_migrate import Migrate
 from flask_bcrypt import Bcrypt
 from flask_login import LoginManager
+from flask_restful import Api
+from flask_jwt_extended import JWTManager
 app = Flask(__name__)
+api =Api(app)
+jwt=JWTManager(app)
 app.config['SECRET_KEY']='989da22cd2a14bbae093939625814d57'
+app.config['JWT_SECRET_KEY']='b983f69691a23405647c8f7efb2c1a80'
 app.config['SQLALCHEMY_DATABASE_URI']='sqlite:///site.db'
 db=SQLAlchemy(app)
 bcrypt=Bcrypt(app)

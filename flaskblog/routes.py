@@ -1,12 +1,13 @@
 from datetime import datetime as dt
 from flaskblog import app,db,bcrypt,api
 from flask import jsonify, render_template,flash,redirect,url_for,request,abort
-from flask_restful import Api,Resource
+from flask_restful import Api,Resource,reqparse
 from flask_jwt_extended import JWTManager,create_access_token,jwt_required,get_jwt_identity
-from flaskblog.models import Post, Provision,User
+from flaskblog.models import Post, Provision,User,RitmRecord
 from flaskblog.forms import Login,Register,UpdateAccountForm,PostForm
 from flask_login import login_user,current_user,logout_user,login_required
 import json
+import zlib,base64,ast
 import secrets,os
 from PIL import Image
 # posts=[
@@ -388,8 +389,54 @@ class Protected(Resource):
         if extra:
             response.update(extra)
         return response,status_code
+
+class RitmResource(Resource):
+    @jwt_required()
+    def post(self):
+        parser=reqparse.RequestParser()
+        parser.add_argument('ritm_number',type=str,required=True,help="RITM number is required")
+        parser.add_argument('payload',type=str,required=True,help="Payload is required")
+        data=parser.parse_args()
+        compressed_payload=zlib.compress(data['payload'].encode('utf-8'))
+        compressed_payload_b64=base64.b64encode(compressed_payload).decode('utf-8')
+        new_record=RitmRecord(
+            ritm_number=data['ritm_number'],
+            payload=compressed_payload_b64
+        )
+        db.session.add(new_record)
+        db.session.commit()
+
+        get_data=RitmRecord.query.filter_by(ritm_number=data['ritm_number']).first()
+        final_data={
+            "Id":get_data.id,
+            "Ritm Number":get_data.ritm_number,
+            
+        }
+        return {
+            "message":"Record created Successfully",
+            "Data":final_data
+        },201
     
+
+    @jwt_required()
+    def get(self):
+        ritm_number=request.args.get('ritm')
+        record=RitmRecord.query.filter_by(ritm_number=ritm_number).first()
+        if not record:
+            return {
+                "message":f"Record not found for {ritm_number}"
+            },404
+        compressed_payload=base64.b64decode(record.payload)
+        original_payload=zlib.decompress(compressed_payload).decode('utf-8')
+        ori_payload=ast.literal_eval(original_payload)
+
+        return {
+            "ritm_number":record.ritm_number,
+            "payload":ori_payload
+        },200
+        
     
 api.add_resource(LoginApi,'/login_api')
 # api.add_resource(Protected,'/protected')
 api.add_resource(Protected,'/protected/username/<string:username>','/protected')
+api.add_resource(RitmResource,'/ritm_payload')

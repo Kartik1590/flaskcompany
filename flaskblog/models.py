@@ -51,3 +51,9 @@ class Provision(db.Model):
 
     def __repr__(self):
         return f"Provision('{self.tenant}')"
+class RitmRecord(db.Model):
+    id=db.Column(db.Integer,primary_key=True)
+    ritm_number=db.Column(db.String(255),nullable=False)
+    payload=db.Column(db.Text,nullable=False)
+
+
